@@ -15,7 +15,6 @@ export async function POST(
         const { requestId } = params
         const { reason } = await req.json()
 
-        // 1. Fetch request to check grace period (5 mins)
         const { data: request, error: fetchError } = await supabase
             .from("emergency_requests")
             .select("created_at, status")
@@ -40,20 +39,16 @@ export async function POST(
             }, { status: 403 })
         }
 
-        // 2. Perform cancellation
         await Promise.all([
-            // Update request status
             supabase.from("emergency_requests").update({
                 status: "cancelled",
                 metadata: { cancel_reason: reason, cancelled_at: now.toISOString() }
             }).eq("id", requestId),
 
-            // Update assignment status if exists
             supabase.from("ambulance_assignments").update({
                 status: "cancelled"
             }).eq("emergency_request_id", requestId),
 
-            // Log to audit_logs
             supabase.from("audit_logs").insert({
                 action: "EMERGENCY_REQUEST_CANCELLED",
                 entity_id: requestId,
