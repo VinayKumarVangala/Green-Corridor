@@ -8,7 +8,8 @@ export const authConfig = {
         authorized({ auth, request: { nextUrl } }) {
             const isLoggedIn = !!auth?.user
             const isPrivateRoute = nextUrl.pathname.startsWith("/(private)") ||
-                ["/ambulance", "/hospital", "/traffic"].some(p => nextUrl.pathname.startsWith(p))
+                (["/ambulance", "/hospital", "/traffic"].some(p => nextUrl.pathname.startsWith(p)) &&
+                    !nextUrl.pathname.endsWith("/login"))
 
             if (isPrivateRoute) {
                 if (isLoggedIn) return true
