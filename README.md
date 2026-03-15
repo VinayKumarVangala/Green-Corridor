@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# JEEVAN-SETU (Green Corridor) 🚑
+
+JEEVAN-SETU is an integrated emergency response ecosystem designed to minimize response times for ambulances through AI-driven coordination between citizens, ambulances, hospitals, and traffic police.
+
+## Features
+
+- **Public Route**: Citizen emergency requests and tracking.
+- **Ambulance Module**: Navigation and assignment management.
+- **Hospital Module**: Advance notification and dashboard.
+- **Traffic Module**: Junction clearance alerts.
+- **AI Brain**: Dynamic rerouting and stakeholder coordination.
+
+## Tech Stack
+
+- **Framework**: Next.js 14 (App Router)
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS + shadcn/ui
+- **Database/Auth**: Supabase
+- **Maps**: Leaflet (OpenStreetMap)
+- **State Management**: Zustand
+- **Real-time**: Supabase Realtime / Socket.io
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18+
+- npm
+
+### Installation
+
+1. Clone the repository.
+2. Install dependencies:
+   ```bash
+   npm install --legacy-peer-deps
+   ```
+3. Copy the environment template:
+   ```bash
+   cp .env.local.example .env.local
+   ```
+4. Fill in your Supabase credentials in `.env.local`.
+
+### Supabase Setup
+
+1. Create a new Supabase project.
+2. Run the initial migration found in `supabase/migrations/20260315000000_initial_schema.sql` in the SQL Editor.
+
+### Running Locally
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Project Structure
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `/app`: App Router logic.
+  - `/(public)`: Public routes.
+  - `/(private)`: Protected role-based routes.
+- `/components`: UI and feature components.
+- `/supabase`: Migrations and schema.
+- `/lib`, `/hooks`, `/types`: Support utilities.
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
