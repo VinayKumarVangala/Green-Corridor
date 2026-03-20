@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { checkRateLimit } from "@/lib/rate-limit"
+import { triggerEmergencyProcessing } from "@/lib/ai/engine"
+import { initializeIncident } from "@/lib/analytics/incidentRecorder"
+import { handleApiError, withRetry } from "@/lib/errors/handleApiError"
+import { RateLimitError, ValidationError } from "@/lib/errors/AppError"
 
 export const dynamic = 'force-dynamic'
 
@@ -15,14 +19,7 @@ export async function POST(req: Request) {
         // 1. Check Rate Limit (Requirement 4)
         const { success, remaining } = await checkRateLimit(ip, "/api/emergency/request", 5)
 
-        if (!success) {
-            return NextResponse.json({
-                error: "Too many requests. Please wait before requesting another emergency ambulance."
-            }, {
-                status: 429,
-                headers: { "X-RateLimit-Remaining": remaining.toString() }
-            })
-        }
+        if (!success) throw new RateLimitError({ endpoint: "/api/emergency/request", ip });
 
         const body = await req.json()
         const {
@@ -34,25 +31,21 @@ export async function POST(req: Request) {
             address
         } = body
 
-        // 2. Create emergency request record
-        const { data: request, error: requestError } = await supabase
-            .from("emergency_requests")
-            .insert({
-                requester_name,
-                requester_phone,
-                emergency_type,
-                address,
-                lat,
-                lng,
-                status: "pending"
-            })
-            .select()
-            .single()
+        if (!emergency_type || !lat || !lng || !address)
+            throw new ValidationError("emergency_type, lat, lng, and address are required");
 
-        if (requestError) {
-            console.error("DB Error:", requestError)
-            return NextResponse.json({ error: "Failed to create request" }, { status: 500 })
-        }
+        // 2. Create emergency request record (with retry)
+        const request = await withRetry(
+            async () => {
+                const { data, error } = await supabase
+                    .from("emergency_requests")
+                    .insert({ requester_name, requester_phone, emergency_type, address, lat, lng, status: "pending" })
+                    .select().single();
+                if (error) throw new Error(error.message);
+                return data;
+            },
+            { maxAttempts: 3, baseDelayMs: 300, label: "emergency_requests insert" },
+        );
 
         // 3. Log to audit_logs (Requirement 5)
         await supabase.from("audit_logs").insert({
@@ -67,39 +60,26 @@ export async function POST(req: Request) {
             }
         })
 
-        // 4. MOCK: AI Ambulance Assignment Logic
-        const { data: nearestAmbulance, error: rpcError } = await supabase.rpc('find_nearest_ambulance', {
-            lat: lat,
-            lng: lng
+        // 4. Initialize incident analytics record
+        await initializeIncident(request.id)
+
+        // 5. Trigger AI dispatch pipeline
+        const jobId = triggerEmergencyProcessing(request.id)
+
+        await supabase.from("audit_logs").insert({
+            action: "AI_DISPATCH_TRIGGERED",
+            entity_id: request.id,
+            entity_type: "emergency_request",
+            details: { jobId, ip, emergency_type }
         })
-
-        if (nearestAmbulance && nearestAmbulance.length > 0) {
-            const ambulance = nearestAmbulance[0]
-
-            await supabase.from("ambulance_assignments").insert({
-                emergency_request_id: request.id,
-                ambulance_driver_id: ambulance.driver_id,
-                status: "assigned"
-            })
-
-            // Update request status and log assignment
-            await supabase.from("emergency_requests").update({ status: "assigned" }).eq("id", request.id)
-
-            await supabase.from("audit_logs").insert({
-                action: "AMBULANCE_ASSIGNED",
-                entity_id: request.id,
-                entity_type: "emergency_request",
-                details: { driver_id: ambulance.driver_id }
-            })
-        }
 
         return NextResponse.json({
             id: request.id,
             message: "Emergency request submitted successfully.",
+            jobId,
             remaining
         })
     } catch (error) {
-        console.error("API Error:", error)
-        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })
+        return handleApiError(error, "/api/emergency/request")
     }
 }

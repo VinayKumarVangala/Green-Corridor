@@ -3,10 +3,48 @@
     "framework": "nextjs",
     "buildCommand": "npm run build",
     "installCommand": "npm install --legacy-peer-deps",
+
+    "env": {
+        "NEXT_PUBLIC_SUPABASE_URL":      "@next_public_supabase_url",
+        "NEXT_PUBLIC_SUPABASE_ANON_KEY": "@next_public_supabase_anon_key",
+        "SUPABASE_SERVICE_ROLE_KEY":     "@supabase_service_role_key",
+        "NEXTAUTH_SECRET":               "@nextauth_secret",
+        "NEXTAUTH_URL":                  "@nextauth_url"
+    },
+
     "rewrites": [
+        { "source": "/api/(.*)", "destination": "/api/$1" }
+    ],
+
+    "headers": [
         {
             "source": "/api/(.*)",
-            "destination": "/api/$1"
+            "headers": [
+                { "key": "X-Content-Type-Options",    "value": "nosniff" },
+                { "key": "X-Frame-Options",           "value": "DENY" },
+                { "key": "Referrer-Policy",           "value": "strict-origin-when-cross-origin" },
+                { "key": "Permissions-Policy",        "value": "geolocation=(self)" }
+            ]
+        },
+        {
+            "source": "/(.*)",
+            "headers": [
+                { "key": "X-DNS-Prefetch-Control", "value": "on" },
+                { "key": "Strict-Transport-Security", "value": "max-age=63072000; includeSubDomains; preload" }
+            ]
         }
-    ]
+    ],
+
+    "git": {
+        "deploymentEnabled": {
+            "main": true,
+            "develop": true
+        }
+    },
+
+    "functions": {
+        "app/api/**/*.ts": {
+            "maxDuration": 30
+        }
+    }
 }

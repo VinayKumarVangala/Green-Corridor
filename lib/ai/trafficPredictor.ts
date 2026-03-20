@@ -18,23 +18,22 @@ export interface CongestionPrediction {
 
 /**
  * Predicts the current congestion level at a junction based on:
- * 1. Recent officer congestion reports (last 2 hours)
+ * 1. Recent officer congestion reports from junction_alerts (last 2 hours)
  * 2. Historical patterns for the current time-of-day and day-of-week
  */
 export async function predictCongestion(junctionId: string): Promise<CongestionPrediction> {
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 
-  // 1. Get recent reports
-  const { data: recentReports } = await supabase
-    .from("congestion_reports")
-    .select("level, reported_at")
+  // Use junction_alerts as a proxy for recent congestion activity
+  const { data: recentAlerts } = await supabase
+    .from("junction_alerts")
+    .select("status, created_at")
     .eq("junction_id", junctionId)
-    .gte("reported_at", twoHoursAgo)
-    .order("reported_at", { ascending: false })
+    .gte("created_at", twoHoursAgo)
+    .order("created_at", { ascending: false })
     .limit(10);
 
-  if (!recentReports || recentReports.length === 0) {
-    // No data — fall back to time-of-day heuristic
+  if (!recentAlerts || recentAlerts.length === 0) {
     return {
       junctionId,
       predicted: getTimeBasedDefault(),
@@ -43,29 +42,29 @@ export async function predictCongestion(junctionId: string): Promise<CongestionP
     };
   }
 
-  // 2. Weighted average of recent reports (more recent = higher weight)
-  const levelMap: Record<CongestionLevel, number> = { light: 1, moderate: 2, heavy: 3, gridlock: 4 };
+  // Active alerts = heavier congestion; cleared = lighter
+  const statusMap: Record<string, number> = { pending: 3, cleared: 1, cancelled: 1 };
   const reverseMap: Record<number, CongestionLevel> = { 1: "light", 2: "moderate", 3: "heavy", 4: "gridlock" };
 
   let weightedSum = 0;
   let totalWeight = 0;
 
-  recentReports.forEach((report, index) => {
-    const weight = recentReports.length - index; // Most recent gets highest weight
-    const value = levelMap[report.level as CongestionLevel] || 2;
+  recentAlerts.forEach((alert, index) => {
+    const weight = recentAlerts.length - index;
+    const value = statusMap[alert.status] || 2;
     weightedSum += value * weight;
     totalWeight += weight;
   });
 
   const avgLevel = Math.round(weightedSum / totalWeight);
   const predicted = reverseMap[Math.min(4, Math.max(1, avgLevel))] || "moderate";
-  const confidence = Math.min(0.95, 0.5 + recentReports.length * 0.05);
+  const confidence = Math.min(0.95, 0.5 + recentAlerts.length * 0.05);
 
   return {
     junctionId,
     predicted,
     confidence: Math.round(confidence * 100) / 100,
-    basedOnReports: recentReports.length,
+    basedOnReports: recentAlerts.length,
   };
 }
 
@@ -90,7 +89,7 @@ export async function getAffectedJunctions(
 ): Promise<string[]> {
   const { data: junctions } = await supabase
     .from("traffic_junctions")
-    .select("id, latitude, longitude");
+    .select("id, lat, lng");
 
   if (!junctions) return [];
 
@@ -98,7 +97,7 @@ export async function getAffectedJunctions(
 
   const affected = junctions.filter((j) =>
     routePoints.some(
-      (p) => haversineDistance(p.lat, p.lng, j.latitude || 0, j.longitude || 0) <= proximityKm
+      (p) => haversineDistance(p.lat, p.lng, j.lat || 0, j.lng || 0) <= proximityKm
     )
   );
 

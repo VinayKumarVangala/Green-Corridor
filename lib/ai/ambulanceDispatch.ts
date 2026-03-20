@@ -46,8 +46,8 @@ export async function findNearestAvailableAmbulance(
   // Query all available drivers
   const { data: drivers, error } = await supabase
     .from("ambulance_drivers")
-    .select("*")
-    .eq("status", "available");
+    .select("id, profile_id, vehicle_number, current_status, current_lat, current_lng")
+    .eq("current_status", "available");
 
   if (error || !drivers) {
     console.error("Failed to query drivers:", error);
@@ -57,16 +57,16 @@ export async function findNearestAvailableAmbulance(
   // Calculate distance and score for each driver
   const candidates: AmbulanceCandidate[] = drivers
     .map((d) => {
-      const distance = haversineDistance(lat, lng, d.latitude || 0, d.longitude || 0);
+      const distance = haversineDistance(lat, lng, d.current_lat || 0, d.current_lng || 0);
       // Score: lower is better. Weighted by distance (70%) and inverse acceptance rate (30%).
-      const acceptanceRate = d.acceptance_rate || 0.8;
+      const acceptanceRate = 0.8; // Default; extend schema to track this if needed
       const score = distance * 0.7 + (1 - acceptanceRate) * radiusKm * 0.3;
       return {
         id: d.id,
-        name: d.full_name || "Unknown",
+        name: d.vehicle_number || "Unknown",
         vehicleNumber: d.vehicle_number || "N/A",
-        lat: d.latitude || 0,
-        lng: d.longitude || 0,
+        lat: d.current_lat || 0,
+        lng: d.current_lng || 0,
         distance: Math.round(distance * 100) / 100,
         acceptanceRate,
         score: Math.round(score * 100) / 100,
@@ -99,9 +99,9 @@ export async function dispatchWithFallback(
       .from("ambulance_assignments")
       .insert({
         emergency_request_id: requestId,
-        driver_id: candidate.id,
-        status: "pending",
-        created_at: new Date().toISOString(),
+        ambulance_driver_id: candidate.id,
+        status: "assigned",
+        assigned_at: new Date().toISOString(),
       })
       .select()
       .single();
@@ -131,7 +131,7 @@ export async function dispatchWithFallback(
     console.log(`[Dispatch] Driver ${candidate.vehicleNumber} did not respond. Trying next...`);
     await supabase
       .from("ambulance_assignments")
-      .update({ status: "timeout" })
+      .update({ status: "declined", declined_at: new Date().toISOString() })
       .eq("id", assignment.id);
   }
 

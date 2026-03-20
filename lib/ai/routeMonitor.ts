@@ -2,7 +2,6 @@ import { createClient } from "@supabase/supabase-js";
 import {
   calculateOptimalRoute,
   generateAlternativeRoutes,
-  getTrafficFactor,
   detectRushHour,
   type RouteResult,
   type ScoredRoute,
@@ -15,13 +14,13 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 // ==========================================
 // Configuration
 // ==========================================
-const MONITOR_INTERVAL_MS = 30_000;     // Check every 30 seconds
-const DELAY_THRESHOLD_S = 300;          // 5 minute delay triggers reroute
-const IMPROVEMENT_THRESHOLD = 0.15;     // 15% score improvement triggers recommendation
-const MAX_MONITORS = 50;                // Max concurrent monitored routes
+const MONITOR_INTERVAL_MS = 30_000;  // 30 seconds
+const DELAY_THRESHOLD_S = 300;       // 5-minute delay triggers reroute search
+const IMPROVEMENT_THRESHOLD = 0.15;  // 15% score improvement required to reroute
+const MAX_MONITORS = 50;
 
 // ==========================================
-// Active Monitor Registry
+// Types
 // ==========================================
 interface ActiveMonitor {
   assignmentId: string;
@@ -30,7 +29,8 @@ interface ActiveMonitor {
   driverLng: number;
   destinationLat: number;
   destinationLng: number;
-  originalDuration: number;
+  /** Duration of the last accepted route — used as baseline for delay detection */
+  lastKnownDuration: number;
   intervalId: ReturnType<typeof setInterval> | null;
   checkCount: number;
   reroutes: number;
@@ -40,7 +40,7 @@ interface ActiveMonitor {
 const activeMonitors: Map<string, ActiveMonitor> = new Map();
 
 // ==========================================
-// Start Continuous Monitoring
+// Start Monitoring
 // ==========================================
 export function startRouteMonitoring(
   assignmentId: string,
@@ -49,12 +49,12 @@ export function startRouteMonitoring(
   destLat: number, destLng: number
 ): boolean {
   if (activeMonitors.size >= MAX_MONITORS) {
-    console.warn(`[RouteMonitor] Max monitors (${MAX_MONITORS}) reached. Cannot monitor ${assignmentId}.`);
+    console.warn(`[RouteMonitor] Max monitors reached. Cannot monitor ${assignmentId}.`);
     return false;
   }
 
+  // Update position if already monitoring
   if (activeMonitors.has(assignmentId)) {
-    console.log(`[RouteMonitor] Already monitoring ${assignmentId}. Updating position.`);
     const mon = activeMonitors.get(assignmentId)!;
     mon.driverLat = driverLat;
     mon.driverLng = driverLng;
@@ -68,14 +68,13 @@ export function startRouteMonitoring(
     driverLng,
     destinationLat: destLat,
     destinationLng: destLng,
-    originalDuration: currentRoute.duration,
+    lastKnownDuration: currentRoute.duration,
     intervalId: null,
     checkCount: 0,
     reroutes: 0,
     startedAt: new Date(),
   };
 
-  // Start periodic checks
   monitor.intervalId = setInterval(() => {
     runMonitorCheck(assignmentId).catch((err) =>
       console.error(`[RouteMonitor] Check failed for ${assignmentId}:`, err)
@@ -83,7 +82,7 @@ export function startRouteMonitoring(
   }, MONITOR_INTERVAL_MS);
 
   activeMonitors.set(assignmentId, monitor);
-  console.log(`[RouteMonitor] Started monitoring ${assignmentId}. Interval: ${MONITOR_INTERVAL_MS / 1000}s`);
+  console.log(`[RouteMonitor] Started monitoring ${assignmentId} (interval: ${MONITOR_INTERVAL_MS / 1000}s)`);
   return true;
 }
 
@@ -92,20 +91,15 @@ export function startRouteMonitoring(
 // ==========================================
 export function stopRouteMonitoring(assignmentId: string): void {
   const monitor = activeMonitors.get(assignmentId);
-  if (monitor?.intervalId) {
-    clearInterval(monitor.intervalId);
-  }
+  if (monitor?.intervalId) clearInterval(monitor.intervalId);
   activeMonitors.delete(assignmentId);
   console.log(`[RouteMonitor] Stopped monitoring ${assignmentId}`);
 }
 
 // ==========================================
-// Update Driver Position
+// Update Driver Position (called from location sync)
 // ==========================================
-export function updateDriverPosition(
-  assignmentId: string,
-  lat: number, lng: number
-): void {
+export function updateDriverPosition(assignmentId: string, lat: number, lng: number): void {
   const monitor = activeMonitors.get(assignmentId);
   if (monitor) {
     monitor.driverLat = lat;
@@ -120,9 +114,21 @@ async function runMonitorCheck(assignmentId: string): Promise<void> {
   const monitor = activeMonitors.get(assignmentId);
   if (!monitor) return;
 
+  // Auto-stop if assignment is no longer active
+  const { data: assignment } = await supabase
+    .from("ambulance_assignments")
+    .select("status")
+    .eq("id", assignmentId)
+    .single();
+
+  if (!assignment || !["accepted", "picked_up"].includes(assignment.status)) {
+    console.log(`[RouteMonitor] Assignment ${assignmentId} ended (${assignment?.status}). Stopping monitor.`);
+    stopRouteMonitoring(assignmentId);
+    return;
+  }
+
   monitor.checkCount++;
 
-  // 1. Recalculate current route with fresh traffic data
   const freshRoute = await calculateOptimalRoute(
     monitor.driverLat, monitor.driverLng,
     monitor.destinationLat, monitor.destinationLng
@@ -133,59 +139,87 @@ async function runMonitorCheck(assignmentId: string): Promise<void> {
     return;
   }
 
-  // 2. Compare with original duration
-  const delay = freshRoute.duration - monitor.originalDuration;
+  // Compare against last accepted duration (not original) to avoid compounding false positives
+  const delay = freshRoute.duration - monitor.lastKnownDuration;
   const delayMinutes = Math.round(delay / 60);
 
   console.log(
-    `[RouteMonitor] Check #${monitor.checkCount} for ${assignmentId}: ` +
-    `Current ETA: ${Math.round(freshRoute.duration / 60)}m | ` +
-    `Original: ${Math.round(monitor.originalDuration / 60)}m | ` +
-    `Delay: ${delayMinutes >= 0 ? "+" : ""}${delayMinutes}m`
+    `[RouteMonitor] #${monitor.checkCount} ${assignmentId}: ` +
+    `ETA ${Math.round(freshRoute.duration / 60)}m | ` +
+    `Baseline ${Math.round(monitor.lastKnownDuration / 60)}m | ` +
+    `Δ ${delayMinutes >= 0 ? "+" : ""}${delayMinutes}m`
   );
 
-  // 3. Check if delay exceeds threshold
   if (delay > DELAY_THRESHOLD_S) {
-    console.warn(`[RouteMonitor] DELAY THRESHOLD EXCEEDED for ${assignmentId}. Searching alternatives...`);
+    console.warn(`[RouteMonitor] Delay threshold exceeded for ${assignmentId}. Searching alternatives...`);
 
-    // Generate alternative routes
     const alternatives = await generateAlternativeRoutes(
       monitor.driverLat, monitor.driverLng,
       monitor.destinationLat, monitor.destinationLng
     );
 
-    if (alternatives.length > 1) {
-      const best = alternatives[0]; // Already sorted by score
-      const improvement = 1 - best.route.score / freshRoute.score;
+    if (alternatives.length > 0) {
+      const best = alternatives[0];
+      const improvement = freshRoute.score > 0
+        ? 1 - best.route.score / freshRoute.score
+        : 0;
 
       if (improvement >= IMPROVEMENT_THRESHOLD) {
         console.log(
-          `[RouteMonitor] BETTER ROUTE FOUND for ${assignmentId}! ` +
-          `Improvement: ${Math.round(improvement * 100)}% | ` +
+          `[RouteMonitor] Rerouting ${assignmentId}: ` +
+          `${Math.round(improvement * 100)}% better | ` +
           `New ETA: ${Math.round(best.route.duration / 60)}m`
         );
 
-        // Log the reroute event
-        await logRerouteEvent(assignmentId, freshRoute, best.route, improvement);
+        await logRerouteEvent(assignmentId, monitor.currentRoute, best.route, improvement);
+        await notifyDriverReroute(assignmentId, best);
 
-        // Update the monitor with the new route
+        // Update baseline to the new accepted route
         monitor.currentRoute = best.route;
+        monitor.lastKnownDuration = best.route.duration;
         monitor.reroutes++;
-
         return;
       }
     }
 
-    // No significantly better route found
-    console.log(`[RouteMonitor] No significantly better route found for ${assignmentId}. Continuing on current.`);
+    console.log(`[RouteMonitor] No better route found for ${assignmentId}. Continuing.`);
   }
 
-  // Update current route data
+  // Update last known duration to fresh calculation (drift tracking)
+  monitor.lastKnownDuration = freshRoute.duration;
   monitor.currentRoute = freshRoute;
 }
 
 // ==========================================
-// Reroute Event Logging
+// Notify Driver of Reroute via DB
+// ==========================================
+async function notifyDriverReroute(assignmentId: string, best: ScoredRoute): Promise<void> {
+  try {
+    // Store the recommended route in route_tracking so the driver's app picks it up
+    await supabase.from("route_tracking").upsert(
+      {
+        assignment_id: assignmentId,
+        route_data: {
+          polyline: best.route.polyline,
+          steps: best.route.steps,
+          distance: best.route.distance,
+          duration: best.route.duration,
+          score: best.route.score,
+          label: best.label,
+          reroutedAt: new Date().toISOString(),
+        },
+        estimated_arrival: new Date(Date.now() + best.route.duration * 1000).toISOString(),
+        last_updated: new Date().toISOString(),
+      },
+      { onConflict: "assignment_id" }
+    );
+  } catch (err) {
+    console.error("[RouteMonitor] Failed to notify driver of reroute:", err);
+  }
+}
+
+// ==========================================
+// Reroute Event Logging (enriched for weight learning)
 // ==========================================
 async function logRerouteEvent(
   assignmentId: string,
@@ -200,10 +234,13 @@ async function logRerouteEvent(
         assignmentId,
         oldDuration: oldRoute.duration,
         newDuration: newRoute.duration,
+        oldDistance: oldRoute.distance,
+        newDistance: newRoute.distance,
         oldScore: oldRoute.score,
         newScore: newRoute.score,
+        oldTrafficFactor: oldRoute.trafficFactor,
+        newTrafficFactor: newRoute.trafficFactor,
         improvement: Math.round(improvement * 100),
-        trafficFactor: newRoute.trafficFactor,
         rushHour: detectRushHour().label,
         timestamp: new Date().toISOString(),
       },
@@ -220,11 +257,18 @@ export function getMonitorStatus(assignmentId: string): ActiveMonitor | undefine
   return activeMonitors.get(assignmentId);
 }
 
-export function getAllActiveMonitors(): { assignmentId: string; checks: number; reroutes: number; uptime: number }[] {
+export function getAllActiveMonitors(): {
+  assignmentId: string;
+  checks: number;
+  reroutes: number;
+  uptimeSeconds: number;
+  currentEtaMinutes: number;
+}[] {
   return Array.from(activeMonitors.values()).map((m) => ({
     assignmentId: m.assignmentId,
     checks: m.checkCount,
     reroutes: m.reroutes,
-    uptime: Math.round((Date.now() - m.startedAt.getTime()) / 1000),
+    uptimeSeconds: Math.round((Date.now() - m.startedAt.getTime()) / 1000),
+    currentEtaMinutes: Math.round(m.lastKnownDuration / 60),
   }));
 }

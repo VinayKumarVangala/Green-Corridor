@@ -13,11 +13,17 @@ import {
 } from "./trafficPredictor";
 import {
   notifyAllStakeholders,
+  sendHospitalEscalation,
+  type AssignmentContext,
 } from "./coordinationManager";
 import {
   registerJobHandler,
   enqueueJob,
 } from "./jobProcessor";
+import {
+  recordFirstAssignment,
+  recordHospitalAlternatives,
+} from "../analytics/incidentRecorder";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://dummy.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "dummy-key";
@@ -32,6 +38,69 @@ registerJobHandler("PROCESS_EMERGENCY", async (data) => {
 
 registerJobHandler("MONITOR_ASSIGNMENT", async (data) => {
   await monitorActiveAssignment(data.assignmentId);
+});
+
+registerJobHandler("HOSPITAL_ESCALATION", async (data) => {
+  await sendHospitalEscalation(data as { assignmentId: string; hospitalId: string; vehicleNumber: string; minutes: number });
+});
+
+registerJobHandler("REROUTE_CHECK", async (data) => {
+  const { assignmentId, currentLat, currentLng, destLat, destLng } = data;
+  // Inline reroute: call the recalculate-route logic directly
+  const { generateAlternativeRoutes } = await import("./routeOptimizer");
+  const { notifyJunctions, updateHospitalEta } = await import("./coordinationManager");
+
+  const alternatives = await generateAlternativeRoutes(currentLat, currentLng, destLat, destLng);
+  if (!alternatives.length) return;
+
+  const best = alternatives[0];
+
+  const { data: activeAlerts } = await supabase
+    .from("junction_alerts")
+    .select("junction_id")
+    .eq("assignment_id", assignmentId)
+    .eq("status", "pending");
+
+  const oldJunctionIds = (activeAlerts ?? []).map((a: any) => a.junction_id);
+
+  const { data: assignment } = await supabase
+    .from("ambulance_assignments")
+    .select("hospital_id, ambulance_drivers(vehicle_number), emergency_requests(emergency_type)")
+    .eq("id", assignmentId)
+    .single();
+
+  const vehicleNumber = (assignment?.ambulance_drivers as any)?.vehicle_number ?? "AMB";
+  const emergencyType = (assignment?.emergency_requests as any)?.emergency_type ?? "General";
+
+  await notifyJunctions(assignmentId, vehicleNumber, emergencyType, best.route, oldJunctionIds);
+
+  if (assignment?.hospital_id) {
+    const { data: tracking } = await supabase
+      .from("route_tracking")
+      .select("estimated_arrival")
+      .eq("assignment_id", assignmentId)
+      .order("last_updated", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const oldEta = tracking?.estimated_arrival
+      ? Math.max(0, (new Date(tracking.estimated_arrival).getTime() - Date.now()) / 1000)
+      : best.route.duration;
+
+    await updateHospitalEta(assignmentId, assignment.hospital_id, vehicleNumber, best.route.duration, oldEta);
+  }
+
+  await supabase.from("route_tracking").upsert(
+    {
+      assignment_id: assignmentId,
+      route_data: { polyline: best.route.polyline, steps: best.route.steps, duration: best.route.duration },
+      estimated_arrival: new Date(Date.now() + best.route.duration * 1000).toISOString(),
+      last_updated: new Date().toISOString(),
+    },
+    { onConflict: "assignment_id" }
+  );
+
+  console.log(`[Engine] REROUTE_CHECK complete for ${assignmentId}: new ETA ${Math.round(best.route.duration / 60)}m`);
 });
 
 // ==========================================
@@ -56,7 +125,7 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
   // 1. Fetch request details
   const { data: request, error } = await supabase
     .from("emergency_requests")
-    .select("*, citizen_profiles(*)")
+    .select("id, emergency_type, lat, lng, requester_name, requester_phone")
     .eq("id", requestId)
     .single();
 
@@ -64,8 +133,8 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
     throw new Error(`Emergency request ${requestId} not found`);
   }
 
-  const pickupLat = request.latitude;
-  const pickupLng = request.longitude;
+  const pickupLat = request.lat;
+  const pickupLng = request.lng;
   const emergencyType = request.emergency_type || "General";
 
   console.log(`[AI Engine] Emergency Type: ${emergencyType}`);
@@ -98,6 +167,12 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
     console.log(`[AI Engine] Best Hospital: ${selectedHospital.name} (${selectedHospital.distance}km, ETA: ${Math.round(selectedHospital.estimatedArrival / 60)}m)`);
   }
 
+  // Record hospital alternatives for analytics
+  await recordHospitalAlternatives(
+    requestId,
+    hospitals.slice(0, 5).map((h, i) => ({ id: h.id, name: h.name, distance: h.distance, score: h.score, selected: i === 0 }))
+  );
+
   // 4. Dispatch with fallback chain
   console.log(`[AI Engine] PHASE 3: Dispatching ambulance...`);
   const dispatchResult = await dispatchWithFallback(requestId, candidates);
@@ -116,7 +191,6 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
   console.log(`[AI Engine] PHASE 4: Calculating mission route...`);
   const hospitalLat = selectedHospital?.id ? (await getHospitalCoords(selectedHospital.id)).lat : pickupLat;
   const hospitalLng = selectedHospital?.id ? (await getHospitalCoords(selectedHospital.id)).lng : pickupLng;
-
   const missionRoute = await calculateFullMissionRoute(
     driverCandidate.lat, driverCandidate.lng,
     pickupLat, pickupLng,
@@ -142,26 +216,45 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
     console.log(`[AI Engine] Traffic Alert: ${heavyCount} congested junctions detected.`);
   }
 
-  // 7. Notify all stakeholders
-  const { notified, errors } = await notifyAllStakeholders(
-    {
-      id: requestId,
-      hospital_id: selectedHospital?.id,
-      driver_id: dispatchResult.assignedDriverId,
-      vehicle_number: driverCandidate.vehicleNumber,
-      emergency_type: emergencyType,
-      eta: missionRoute.toPickup?.duration || 0,
-    },
-    junctionIds
+  // 7. Fetch the actual assignment ID created by dispatchWithFallback
+  const { data: assignment } = await supabase
+    .from("ambulance_assignments")
+    .select("id")
+    .eq("emergency_request_id", requestId)
+    .eq("ambulance_driver_id", dispatchResult.assignedDriverId)
+    .eq("status", "accepted")
+    .maybeSingle();
+
+  const assignmentId = assignment?.id ?? dispatchResult.assignedDriverId;
+
+  // Record first assignment and ambulance candidates for analytics
+  await recordFirstAssignment(
+    requestId,
+    assignmentId,
+    candidates.slice(0, 5).map((c, i) => ({ id: c.id, distance: c.distance, score: c.score, selected: c.id === dispatchResult.assignedDriverId }))
   );
 
-  console.log(`[AI Engine] Stakeholders Notified: ${notified} | Errors: ${errors}`);
+  // 8. Notify all stakeholders
+  const ctx: AssignmentContext = {
+    assignmentId,
+    requestId,
+    hospitalId: selectedHospital?.id,
+    vehicleNumber: driverCandidate.vehicleNumber,
+    emergencyType,
+    etaToPickup: missionRoute.toPickup?.duration ?? 0,
+    etaToHospital: missionRoute.toHospital?.duration ?? 0,
+    route: missionRoute.toPickup,
+  };
+
+  const { notified, errors, junctionIds: alertedJunctions } = await notifyAllStakeholders(ctx, junctionIds);
+
+  console.log(`[AI Engine] Stakeholders Notified: ${notified} | Errors: ${errors} | Junctions: ${alertedJunctions.length}`);
   console.log(`\n${"=".repeat(60)}`);
   console.log(`[AI Engine] Emergency ${requestId} FULLY PROCESSED`);
   console.log(`${"=".repeat(60)}\n`);
 
-  // 8. Schedule continuous monitoring
-  triggerAssignmentMonitoring(requestId);
+  // 9. Schedule continuous monitoring
+  triggerAssignmentMonitoring(assignmentId);
 }
 
 // ==========================================
@@ -191,9 +284,9 @@ async function monitorActiveAssignment(assignmentId: string): Promise<void> {
 async function getHospitalCoords(hospitalId: string): Promise<{ lat: number; lng: number }> {
   const { data } = await supabase
     .from("hospitals")
-    .select("latitude, longitude")
+    .select("lat, lng")
     .eq("id", hospitalId)
     .single();
 
-  return { lat: data?.latitude || 0, lng: data?.longitude || 0 };
+  return { lat: data?.lat || 0, lng: data?.lng || 0 };
 }

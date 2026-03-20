@@ -62,3 +62,16 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 - `/supabase`: Migrations and schema.
 - `/lib`, `/hooks`, `/types`: Support utilities.
 
+
+## Documentation
+
+- [/docs/api/README.md](docs/api/README.md)
+- [/docs/user/citizen.md](docs/user/citizen.md)
+- [/docs/user/ambulance.md](docs/user/ambulance.md)
+- [/docs/user/hospital.md](docs/user/hospital.md)
+- [/docs/user/traffic.md](docs/user/traffic.md)
+- [/docs/developer/setup.md](docs/developer/setup.md)
+- [/docs/developer/architecture.md](docs/developer/architecture.md)
+- [/docs/developer/deployment.md](docs/developer/deployment.md)
+- [/docs/developer/contributing.md](docs/developer/contributing.md)
+- [/docs/hackathon/README.md](docs/hackathon/README.md)

@@ -1,0 +1,95 @@
+openapi: 3.0.3
+info:
+  title: JEEVAN-SETU (Green Corridor) API
+  version: 1.0.0
+  description: Emergency response coordination API.
+servers:
+  - url: http://localhost:3000/api
+paths:
+  /emergency/request:
+    post:
+      summary: Citizen emergency request submission
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                phone:
+                  type: string
+                location:
+                  type: object
+                  properties:
+                    lat:
+                      type: number
+                    lng:
+                      type: number
+                incidentType:
+                  type: string
+              required: [name, phone, location, incidentType]
+      responses:
+        '200':
+          description: Request accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requestId: { type: string }
+                  status: { type: string }
+  /ambulance/status:
+    get:
+      summary: Get ambulance status dashboard
+      responses:
+        '200':
+          description: Current ambulance status list
+  /ambulance/location:
+    post:
+      summary: Update ambulance location
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ambulanceId: { type: string }
+                lat: { type: number }
+                lng: { type: number }
+                heading: { type: number }
+              required: [ambulanceId, lat, lng]
+      responses:
+        '200': { description: OK }
+  /hospital/notifications:
+    get:
+      summary: Fetch hospital notifications for incoming ambulances
+      responses:
+        '200': { description: OK }
+  /traffic/clearance:
+    post:
+      summary: Report intersection clearance from traffic police
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                location: { type: string }
+                status: { type: string }
+              required: [location, status]
+      responses:
+        '200': { description: OK }
+  /ai/dispatch:
+    post:
+      summary: AI dispatch trigger
+      responses:
+        '200': { description: Dispatch computation complete }
+  /ml/retrain:
+    post:
+      summary: Trigger ML model retraining
+      responses:
+        '200': { description: Retraining started }

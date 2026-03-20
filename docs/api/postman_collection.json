@@ -1,0 +1,28 @@
+{
+  "info": {
+    "name": "Green Corridor API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Postman collection for Green Corridor emergency response API."
+  },
+  "item": [
+    {
+      "name": "Citizen request",
+      "request": {
+        "method": "POST",
+        "header": [{"key":"Content-Type","value":"application/json"}],
+        "url": {"raw":"{{baseUrl}}/emergency/request","host":["{{baseUrl}}"],"path":["emergency","request"]},
+        "body": {"mode":"raw","raw":"{\n  \"name\": \"Test User\",\n  \"phone\": \"9999999999\",\n  \"location\": {\"lat\":12.9716,\"lng\":77.5946},\n  \"incidentType\": \"medical\"\n}"}
+      }
+    },
+    {
+      "name": "Ambulance location update",
+      "request": {
+        "method": "POST",
+        "header": [{"key":"Content-Type","value":"application/json"}],
+        "url": {"raw":"{{baseUrl}}/ambulance/location","host":["{{baseUrl}}"],"path":["ambulance","location"]},
+        "body": {"mode":"raw","raw":"{\n  \"ambulanceId\": \"AMB-123\",\n  \"lat\": 12.9716,\n  \"lng\": 77.5946\n}"}
+      }
+    }
+  ],
+  "variable": [{"key":"baseUrl","value":"http://localhost:3000/api"}]
+}
