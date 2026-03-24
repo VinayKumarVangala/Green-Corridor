@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2 } from "lucide-react"
+import { DemoCredentials } from "./DemoCredentials"
 
 const formSchema = z.object({
     junctionId: z.string().min(1, "Junction ID is required"),
@@ -32,8 +33,8 @@ export function TrafficLoginForm() {
     const form = useForm<z.infer<typeof formSchema>>({
         resolver: zodResolver(formSchema),
         defaultValues: {
-            junctionId: "",
-            password: "",
+            junctionId: "JUNC001",
+            password: "password123",
         },
     })
 
@@ -100,6 +101,7 @@ export function TrafficLoginForm() {
                     Login as Police
                 </Button>
             </form>
+            <DemoCredentials role="traffic_police" />
         </Form>
     )
 }

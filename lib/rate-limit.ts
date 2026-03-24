@@ -1,10 +1,14 @@
 import { createClient } from "@supabase/supabase-js"
+import { isDemoMode } from "./demo-mode"
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://dummy.supabase.co"
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "dummy-key"
 const supabase = createClient(supabaseUrl, supabaseKey)
 
 export async function checkRateLimit(ip: string, endpoint: string, limit: number = 5): Promise<{ success: boolean; remaining: number }> {
+    if (isDemoMode()) {
+        return { success: true, remaining: limit }
+    }
     try {
         // Clean up old entries first (demonstrative for hackathon, ideally handled by cron)
         await supabase.rpc('clean_old_rate_limits')

@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { AppError, toAppError, isAppError } from "./AppError";
+import { isDemoMode } from "../demo-mode";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL  ?? "https://dummy.supabase.co",
@@ -32,7 +33,7 @@ function structuredLog(entry: LogEntry) {
 // ─── Persist non-operational errors to audit_logs for Supabase dashboard ─────
 
 async function persistError(err: AppError, endpoint?: string) {
-  if (err.isOperational) return; // operational errors are expected — don't pollute logs
+  if (err.isOperational || isDemoMode()) return; // operational errors or demo mode — don't pollute logs
   try {
     await supabase.from("audit_logs").insert({
       action: "SYSTEM_ERROR",

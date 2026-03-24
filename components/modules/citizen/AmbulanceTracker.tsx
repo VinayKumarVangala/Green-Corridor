@@ -48,6 +48,26 @@ export function AmbulanceTracker({ requestId }: { requestId: string }) {
     }
 
     useEffect(() => {
+        if (requestId.startsWith("demo-")) {
+            setData({
+                id: requestId,
+                status: "dispatched",
+                lat: 19.0760,
+                lng: 72.8777,
+                eta_minutes: 8,
+                assignment: {
+                    ambulance_driver_id: "demo-driver",
+                    ambulance_drivers: {
+                        current_lat: 19.0860,
+                        current_lng: 72.8877,
+                        vehicle_number: "DEMO-001"
+                    }
+                }
+            })
+            setLoading(false)
+            return
+        }
+
         fetchStatus()
 
         // Request notification permission
@@ -86,7 +106,7 @@ export function AmbulanceTracker({ requestId }: { requestId: string }) {
 
     // Split effect for ambulance location to keep logic clean
     useEffect(() => {
-        if (!data?.assignment?.ambulance_driver_id) return
+        if (!data?.assignment?.ambulance_driver_id || requestId.startsWith("demo-")) return
 
         const driverId = data.assignment.ambulance_driver_id
         const driverChannel = supabase

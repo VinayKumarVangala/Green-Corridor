@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2 } from "lucide-react"
+import { DemoCredentials } from "./DemoCredentials"
 
 const formSchema = z.object({
     employeeId: z.string().min(1, "Employee ID is required"),
@@ -33,9 +34,9 @@ export function AmbulanceLoginForm() {
     const form = useForm<z.infer<typeof formSchema>>({
         resolver: zodResolver(formSchema),
         defaultValues: {
-            employeeId: "",
-            vehicleNumber: "",
-            password: "",
+            employeeId: "EMP001",
+            vehicleNumber: "VEH001",
+            password: "password123",
         },
     })
 
@@ -116,6 +117,7 @@ export function AmbulanceLoginForm() {
                     Login as Driver
                 </Button>
             </form>
+            <DemoCredentials role="ambulance_driver" />
         </Form>
     )
 }

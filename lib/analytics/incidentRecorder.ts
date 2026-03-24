@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { isDemoMode } from "../demo-mode";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "https://dummy.supabase.co",
@@ -14,6 +15,7 @@ const supabase = createClient(
  * Called from /api/emergency/request after the request is inserted.
  */
 export async function initializeIncident(requestId: string): Promise<void> {
+  if (isDemoMode()) return;
   try {
     const { data: request } = await supabase
       .from("emergency_requests")

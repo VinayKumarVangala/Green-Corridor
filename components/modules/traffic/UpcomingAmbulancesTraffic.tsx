@@ -16,26 +16,41 @@ export function UpcomingAmbulancesTraffic({ junctionId }: { junctionId: string }
 
   useEffect(() => {
     const fetchUpcoming = async () => {
-      // In a real app, we'd query for ambulances whose active route passes through this junction
-      // For now, we'll fetch 'accepted' or 'picked_up' assignments
       const { data, error } = await supabase
-        .from('ambulance_assignments')
+        .from('junction_alerts')
         .select(`
           *,
-          emergency_requests (*),
-          ambulance_drivers (*)
+          ambulance_assignments (
+            *,
+            emergency_requests (*),
+            ambulance_drivers (*)
+          )
         `)
-        .in('status', ['accepted', 'picked_up'])
+        .eq('junction_id', junctionId)
+        .eq('status', 'pending')
+        .order('expected_arrival', { ascending: true })
         .limit(5);
 
-      if (!error && data) setAmbulances(data);
+      if (!error && data) {
+        const mapped = data.map(a => ({
+          ...a.ambulance_assignments,
+          alert_id: a.id,
+          expected_arrival: a.expected_arrival
+        }))
+        setAmbulances(mapped);
+      }
     };
 
     fetchUpcoming();
     
     const channel = supabase
-      .channel('traffic-feed')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ambulance_assignments' }, fetchUpcoming)
+      .channel(`traffic-feed-${junctionId}`)
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'junction_alerts',
+        filter: `junction_id=eq.${junctionId}`
+      }, fetchUpcoming)
       .subscribe();
 
     return () => {

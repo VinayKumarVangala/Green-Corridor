@@ -27,20 +27,29 @@ export function IncomingAmbulances({ hospitalId }: { hospitalId: string }) {
 
   const fetchIncoming = async () => {
     try {
-      // In a real app, we'd query ambulance_assignments joined with emergency_requests
-      // for this specific hospitalId where status is 'accepted' or 'picked_up'
       const { data, error } = await supabase
-        .from('ambulance_assignments')
+        .from('hospital_notifications')
         .select(`
           *,
-          emergency_requests (*),
-          ambulance_drivers (*)
+          ambulance_assignments (
+            *,
+            emergency_requests (*),
+            ambulance_drivers (*)
+          )
         `)
-        .eq('status', 'picked_up') // Only show those on the way to hospital
+        .eq('hospital_id', hospitalId)
+        .neq('status', 'arrived')
         .order('created_at', { ascending: false });
 
       if (!error && data) {
-        setAmbulances(data);
+        // Map hospital_notifications to the format expected by IncomingPatientCard
+        const mapped = data.map(n => ({
+          ...n.ambulance_assignments,
+          hospital_notif_id: n.id,
+          eta_timestamp: n.eta,
+          patient_info: n.patient_details
+        }))
+        setAmbulances(mapped);
       }
     } catch (e) {
       console.error("Failed to fetch incoming ambulances", e);
@@ -52,13 +61,14 @@ export function IncomingAmbulances({ hospitalId }: { hospitalId: string }) {
   useEffect(() => {
     fetchIncoming();
     
-    // Subscribe to real-time updates for ambulance_assignments
+    // Subscribe to real-time updates for hospital_notifications
     const channel = supabase
-      .channel('hospital-intake')
+      .channel(`hospital-intake-${hospitalId}`)
       .on('postgres_changes', { 
         event: '*', 
         schema: 'public', 
-        table: 'ambulance_assignments' 
+        table: 'hospital_notifications',
+        filter: `hospital_id=eq.${hospitalId}`
       }, () => {
         fetchIncoming();
       })

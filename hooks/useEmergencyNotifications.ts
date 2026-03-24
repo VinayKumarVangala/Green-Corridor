@@ -44,7 +44,7 @@ export function useEmergencyNotifications() {
                         .eq('id', payload.new.id)
                         .single()
 
-                    if (assignment && assignment.ambulance_id === driverId) {
+                    if (assignment && assignment.ambulance_driver_id === driverId) {
                         setNotifications(prev => [...prev, assignment])
                     }
                 }

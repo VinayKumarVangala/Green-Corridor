@@ -100,7 +100,7 @@ export async function dispatchWithFallback(
       .insert({
         emergency_request_id: requestId,
         ambulance_driver_id: candidate.id,
-        status: "assigned",
+        status: "pending",
         assigned_at: new Date().toISOString(),
       })
       .select()

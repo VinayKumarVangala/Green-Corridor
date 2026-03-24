@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2 } from "lucide-react"
+import { DemoCredentials } from "./DemoCredentials"
 
 const formSchema = z.object({
     hospitalId: z.string().min(1, "Hospital ID is required"),
@@ -32,8 +33,8 @@ export function HospitalLoginForm() {
     const form = useForm<z.infer<typeof formSchema>>({
         resolver: zodResolver(formSchema),
         defaultValues: {
-            hospitalId: "",
-            password: "",
+            hospitalId: "HOSP001",
+            password: "password123",
         },
     })
 
@@ -100,6 +101,7 @@ export function HospitalLoginForm() {
                     Login as Staff
                 </Button>
             </form>
+            <DemoCredentials role="hospital_staff" />
         </Form>
     )
 }

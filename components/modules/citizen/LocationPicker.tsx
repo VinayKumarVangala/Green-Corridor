@@ -8,13 +8,16 @@ import { Button } from "@/components/ui/button"
 import { MapPin, Navigation } from "lucide-react"
 
 // Fix for default marker icons in Leaflet with Next.js
-const DefaultIcon = L.icon({
-    iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-    shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-    iconSize: [25, 41],
-    iconAnchor: [12, 41],
-})
-L.Marker.prototype.options.icon = DefaultIcon
+let DefaultIcon: L.Icon | undefined;
+if (typeof window !== 'undefined') {
+    DefaultIcon = L.icon({
+        iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+        shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+        iconSize: [25, 41],
+        iconAnchor: [12, 41],
+    })
+    L.Marker.prototype.options.icon = DefaultIcon
+}
 
 interface LocationPickerProps {
     onLocationSelect: (lat: number, lng: number, address: string) => void
