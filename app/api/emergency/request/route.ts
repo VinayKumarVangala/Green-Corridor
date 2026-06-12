@@ -5,7 +5,6 @@ import { triggerEmergencyProcessing } from "@/lib/ai/engine"
 import { initializeIncident } from "@/lib/analytics/incidentRecorder"
 import { handleApiError, withRetry } from "@/lib/errors/handleApiError"
 import { RateLimitError, ValidationError } from "@/lib/errors/AppError"
-import { isDemoMode } from "@/lib/demo-mode"
 
 export const dynamic = 'force-dynamic'
 
@@ -14,12 +13,12 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "dummy-key"
 const supabase = createClient(supabaseUrl, supabaseKey)
 
 export async function POST(req: Request) {
+    console.log("[API] Incoming emergency request...");
     try {
         const ip = req.headers.get("x-forwarded-for") || "127.0.0.1"
 
-        // 1. Check Rate Limit (Requirement 4)
+        // 1. Check Rate Limit
         const { success, remaining } = await checkRateLimit(ip, "/api/emergency/request", 5)
-
         if (!success) throw new RateLimitError({ endpoint: "/api/emergency/request", ip });
 
         const body = await req.json()
@@ -32,70 +31,71 @@ export async function POST(req: Request) {
             address
         } = body
 
-        if (!emergency_type || !lat || !lng || !address)
+        if (!emergency_type || !lat || !lng || !address) {
+            console.error("[API] Validation failed: missing required fields");
             throw new ValidationError("emergency_type, lat, lng, and address are required");
-
-        // 2. Create emergency request record (with retry)
-        let request;
-        if (isDemoMode()) {
-            // Demo Mode: Mock the database response
-            request = {
-                id: `demo-${Math.random().toString(36).substr(2, 9)}`,
-                ...body,
-                status: "pending",
-                created_at: new Date().toISOString()
-            };
-            console.log("DEMO MODE: Skipping Supabase insert for dummy/placeholder credentials.");
-        } else {
-            request = await withRetry(
-                async () => {
-                    const { data, error } = await supabase
-                        .from("emergency_requests")
-                        .insert({ requester_name, requester_phone, emergency_type, address, lat, lng, status: "pending" })
-                        .select().single();
-                    if (error) throw new Error(error.message);
-                    return data;
-                },
-                { maxAttempts: 3, baseDelayMs: 300, label: "emergency_requests insert" },
-            );
         }
 
-        // 3. Log to audit_logs (Requirement 5) - Skip if demo
-        if (!isDemoMode()) {
-            await supabase.from("audit_logs").insert({
-                action: "EMERGENCY_REQUEST_CREATED",
-                entity_id: request.id,
-                entity_type: "emergency_request",
-                details: { ip, emergency_type, lat, lng }
-            })
-        }
+        console.log(`[API] Creating request in Supabase: ${emergency_type} at ${address}`);
 
-        // 4. Initialize incident analytics record
-        if (!isDemoMode()) {
-            await initializeIncident(request.id)
-        }
+        // 2. Create emergency request record
+        // We REMOVED isDemoMode() block to ensure real data flow.
+        const request = await withRetry(
+            async () => {
+                const { data, error } = await supabase
+                    .from("emergency_requests")
+                    .insert({ 
+                        requester_name, 
+                        requester_phone, 
+                        emergency_type, 
+                        address, 
+                        lat, 
+                        lng, 
+                        status: "pending" 
+                    })
+                    .select().single();
+                
+                if (error) {
+                    console.error("[API] Supabase INSERT error:", error.message);
+                    throw new Error(error.message);
+                }
+                return data;
+            },
+            { maxAttempts: 3, baseDelayMs: 300, label: "emergency_requests insert" },
+        );
+
+        console.log(`[API] Success! Request ID: ${request.id}`);
+
+        // 3. Log to audit_logs
+        await supabase.from("audit_logs").insert({
+            action: "EMERGENCY_REQUEST_CREATED",
+            entity_id: request.id,
+            entity_type: "emergency_request",
+            details: { ip, emergency_type, lat, lng }
+        }).catch(err => console.error("[API] Audit log failed (request created):", err.message));
+
+        // 4. Initialize incident analytics
+        await initializeIncident(request.id).catch(err => console.error("[API] Analytics init failed:", err.message));
 
         // 5. Trigger AI dispatch pipeline
-        const jobId = (!isDemoMode()) 
-            ? triggerEmergencyProcessing(request.id)
-            : `demo-job-${Math.random().toString(36).substr(2, 6)}`;
+        console.log(`[API] Triggering AI Engine for request: ${request.id}`);
+        const jobId = triggerEmergencyProcessing(request.id);
 
-        if (!isDemoMode()) {
-            await supabase.from("audit_logs").insert({
-                action: "AI_DISPATCH_TRIGGERED",
-                entity_id: request.id,
-                entity_type: "emergency_request",
-                details: { jobId, ip, emergency_type }
-            })
-        }
+        await supabase.from("audit_logs").insert({
+            action: "AI_DISPATCH_TRIGGERED",
+            entity_id: request.id,
+            entity_type: "emergency_request",
+            details: { jobId, ip, emergency_type }
+        }).catch(err => console.error("[API] Audit log failed (AI trigger):", err.message));
 
         return NextResponse.json({
             id: request.id,
-            message: "Emergency request submitted successfully.",
+            message: "Emergency request submitted successfully. AI Dispatch triggered.",
             jobId,
             remaining
         })
     } catch (error) {
+        console.error("[API] Request processing failed:", error);
         return handleApiError(error, "/api/emergency/request")
     }
 }

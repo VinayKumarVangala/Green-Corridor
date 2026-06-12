@@ -12,13 +12,39 @@ export function useEmergencyNotifications() {
     const { data: session } = useSession()
     const [notifications, setNotifications] = useState<any[]>([])
 
+    // Fetch initial pending notifications on mount
+    const fetchInitialPending = async (driverId: string) => {
+        console.log(`[Realtime] Syncing initial pending assignments for driver: ${driverId}`);
+        const { data, error } = await supabase
+            .from('ambulance_assignments')
+            .select(`
+                *,
+                emergency_requests (*)
+            `)
+            .eq('ambulance_driver_id', driverId)
+            .eq('status', 'pending');
+
+        if (error) {
+            console.error("[Realtime] Fetch initial error:", error.message);
+            return;
+        }
+
+        if (data && data.length > 0) {
+            console.log(`[Realtime] Found ${data.length} existing pending assignments.`);
+            setNotifications(data);
+        }
+    }
+
     useEffect(() => {
         if (!session?.user?.id || session.user.role !== "ambulance_driver") return
 
         const driverId = session.user.id
-        const employeeId = session.user.metadata?.employeeId
+        fetchInitialPending(driverId);
 
-        // Subscribe to ambulance_assignments for this driver
+        console.log(`[Realtime] Subscribing to driver_notifications_${driverId}`);
+
+        // Subscribe to ALL status changes for assignments belonging to this driver
+        // Realtime doesn't support complex joins, so we listen to the table and filter locally
         const channel = supabase
             .channel(`driver_notifications_${driverId}`)
             .on(
@@ -26,14 +52,10 @@ export function useEmergencyNotifications() {
                 {
                     event: 'INSERT',
                     schema: 'public',
-                    table: 'ambulance_assignments',
-                    filter: `status=eq.pending`,
+                    table: 'ambulance_assignments'
                 },
                 async (payload) => {
-                    // Check if this assignment belongs to this driver
-                    // In a real DB, we'd filter at the table level, but Supabase Realtime 
-                    // filter might need more setup for complex joins. 
-                    // For now, we fetch details to confirm.
+                    console.log(`[Realtime] New assignment detected! Processing payload:`, payload.new.id);
 
                     const { data: assignment, error } = await supabase
                         .from('ambulance_assignments')
@@ -44,14 +66,29 @@ export function useEmergencyNotifications() {
                         .eq('id', payload.new.id)
                         .single()
 
-                    if (assignment && assignment.ambulance_driver_id === driverId) {
-                        setNotifications(prev => [...prev, assignment])
+                    if (error) {
+                        console.error("[Realtime] Payload detail fetch failed:", error.message);
+                        return;
+                    }
+
+                    if (assignment && assignment.ambulance_driver_id === driverId && assignment.status === "pending") {
+                        console.log(`[Realtime] Assignment confirmed for this driver: ${assignment.id}`);
+                        setNotifications(prev => {
+                            // Deduplicate
+                            if (prev.find(n => n.id === assignment.id)) return prev;
+                            return [...prev, assignment];
+                        })
+                    } else {
+                        console.log(`[Realtime] Assignment ${assignment?.id} is for driver ${assignment?.ambulance_driver_id}, current user is ${driverId}. Ignoring.`);
                     }
                 }
             )
-            .subscribe()
+            .subscribe((status) => {
+                console.log(`[Realtime] Subscription Status for driver ${driverId}: ${status}`);
+            })
 
         return () => {
+            console.log(`[Realtime] Cleaning up subscription for ${driverId}`);
             supabase.removeChannel(channel)
         }
     }, [session])

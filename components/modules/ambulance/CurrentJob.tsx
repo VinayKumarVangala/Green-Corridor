@@ -11,37 +11,43 @@ import {
     CheckCircle,
     AlertCircle,
     Loader2,
-    Check
+    Check,
+    User
 } from "lucide-react";
 import { toast } from "sonner";
 
 export function CurrentJob({ onStartNav }: { onStartNav?: (job: any) => void }) {
-    // In a real app, this would be fetched from the DB or received via Supabase Realtime
     const [job, setJob] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [isUpdating, setIsUpdating] = useState(false);
 
     const fetchActiveJob = async () => {
         try {
+            console.log("[CurrentJob] Fetching active job from API...");
             const res = await fetch("/api/ambulance/assignment/status");
             const data = await res.json();
+            
             if (data.assignment) {
                 const a = data.assignment;
+                const req = a.emergency_requests;
+                console.log(`[CurrentJob] Active job: ${a.id} (${req.emergency_type})`);
+                
                 setJob({
                     id: a.id,
-                    emergencyType: a.emergency_requests.emergency_type,
-                    address: a.emergency_requests.address,
-                    requester: a.emergency_requests.citizen_profiles?.full_name || "Anonymous",
-                    phone: a.emergency_requests.citizen_profiles?.phone || "Not available",
+                    emergencyType: req.emergency_type,
+                    address: req.address,
+                    requester: req.requester_name || "Anonymous",
+                    phone: req.requester_phone || "Not available",
                     status: a.status,
-                    distance: "Calculating...", // This would come from navigation hook
+                    distance: "Calculating...", 
                     eta: "8 mins"
                 });
             } else {
+                console.log("[CurrentJob] No active job found.");
                 setJob(null);
             }
         } catch (e) {
-            console.error("Failed to fetch job", e);
+            console.error("[CurrentJob] Failed to fetch job", e);
         } finally {
             setLoading(false);
         }
@@ -49,12 +55,13 @@ export function CurrentJob({ onStartNav }: { onStartNav?: (job: any) => void }) 
 
     useEffect(() => {
         fetchActiveJob();
-        // Periodic refresh
-        const interval = setInterval(fetchActiveJob, 30000);
+        // Periodic refresh to ensure UI stays synced
+        const interval = setInterval(fetchActiveJob, 10000);
         return () => clearInterval(interval);
     }, []);
 
     const confirmPickup = async () => {
+        console.log(`[CurrentJob] Confirming pickup for ${job.id}`);
         setIsUpdating(true);
         try {
             const res = await fetch("/api/ambulance/pickup-confirm", {
@@ -72,6 +79,7 @@ export function CurrentJob({ onStartNav }: { onStartNav?: (job: any) => void }) 
     };
 
     const confirmArrival = async () => {
+        console.log(`[CurrentJob] Confirming arrival for ${job.id}`);
         setIsUpdating(true);
         try {
             const res = await fetch("/api/ambulance/arrival-confirm", {
@@ -103,7 +111,7 @@ export function CurrentJob({ onStartNav }: { onStartNav?: (job: any) => void }) 
                     <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-100 shadow-sm">
                         <CheckCircle className="h-8 w-8 text-slate-300" />
                     </div>
-                    <p className="text-slate-500 font-bold">No active jobs</p>
+                    <p className="text-slate-500 font-bold">No active missions</p>
                     <p className="text-slate-400 text-sm mt-1">Updates will appear here automatically.</p>
                 </div>
             </Card>
@@ -121,7 +129,7 @@ export function CurrentJob({ onStartNav }: { onStartNav?: (job: any) => void }) 
                             </Badge>
                             <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
                         </div>
-                        <h2 className="text-4xl font-black tracking-tight">{job.emergencyType}</h2>
+                        <h2 className="text-4xl font-black tracking-tight uppercase">{job.emergencyType}</h2>
                     </div>
 
                     <div className="flex items-center gap-4">
@@ -135,7 +143,7 @@ export function CurrentJob({ onStartNav }: { onStartNav?: (job: any) => void }) 
                             className="bg-white text-red-600 hover:bg-slate-100 rounded-2xl h-16 px-8 text-lg font-black shadow-xl shadow-black/10 group transition-all"
                         >
                             <Navigation className="mr-2 h-6 w-6 group-hover:rotate-12 transition-transform" />
-                            GO
+                            MAP
                         </Button>
                     </div>
                 </div>
@@ -180,14 +188,14 @@ export function CurrentJob({ onStartNav }: { onStartNav?: (job: any) => void }) 
                                     className="h-16 rounded-2xl font-bold text-slate-900 border-slate-200 hover:bg-slate-50 gap-2"
                                 >
                                     {job.status === 'picked_up' && <Check className="h-4 w-4 text-emerald-500" />}
-                                    Patient Ready?
+                                    Patient Picked Up
                                 </Button>
                                 <Button
                                     disabled={isUpdating || job.status !== 'picked_up'}
                                     onClick={confirmArrival}
                                     className="h-16 rounded-2xl font-black bg-emerald-600 hover:bg-emerald-700 shadow-xl shadow-emerald-600/10 disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
                                 >
-                                    {isUpdating ? <Loader2 className="h-5 w-5 animate-spin" /> : "MARK ARRIVED"}
+                                    {isUpdating ? <Loader2 className="h-5 w-5 animate-spin" /> : "COMPLETE MISSION"}
                                 </Button>
                             </div>
                         </div>
@@ -195,23 +203,5 @@ export function CurrentJob({ onStartNav }: { onStartNav?: (job: any) => void }) 
                 </div>
             </CardContent>
         </Card>
-    );
-}
-
-// Sub-component for better organization
-function User({ className }: { className?: string }) {
-    return (
-        <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={className}
-        >
-            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
-            <circle cx="12" cy="7" r="4" />
-        </svg>
     );
 }

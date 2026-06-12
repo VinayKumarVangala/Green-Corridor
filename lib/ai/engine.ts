@@ -33,6 +33,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 // Register Job Handlers on Module Load
 // ==========================================
 registerJobHandler("PROCESS_EMERGENCY", async (data) => {
+  console.log(`[AI Engine] Job Received: PROCESS_EMERGENCY for ${data.requestId}`);
   await processEmergencyPipeline(data.requestId);
 });
 
@@ -107,6 +108,7 @@ registerJobHandler("REROUTE_CHECK", async (data) => {
 // Public API: Trigger Emergency Processing
 // ==========================================
 export function triggerEmergencyProcessing(requestId: string): string {
+  console.log(`[AI Engine] Public Trigger for request ${requestId}`);
   return enqueueJob("PROCESS_EMERGENCY", { requestId }, { maxAttempts: 3 });
 }
 
@@ -119,10 +121,11 @@ export function triggerAssignmentMonitoring(assignmentId: string): string {
 // ==========================================
 async function processEmergencyPipeline(requestId: string): Promise<void> {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`[AI Engine] Processing Emergency: ${requestId}`);
+  console.log(`[AI Engine] Core Pipeline: ${requestId}`);
   console.log(`${"=".repeat(60)}\n`);
 
   // 1. Fetch request details
+  console.log(`[AI Engine] Fetching request ${requestId} details...`);
   const { data: request, error } = await supabase
     .from("emergency_requests")
     .select("id, emergency_type, lat, lng, requester_name, requester_phone")
@@ -130,6 +133,7 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
     .single();
 
   if (error || !request) {
+    console.error(`[AI Engine] FAILED TO FETCH: ${error?.message}`);
     throw new Error(`Emergency request ${requestId} not found`);
   }
 
@@ -137,15 +141,11 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
   const pickupLng = request.lng;
   const emergencyType = request.emergency_type || "General";
 
-  console.log(`[AI Engine] Emergency Type: ${emergencyType}`);
-  console.log(`[AI Engine] Location: ${pickupLat}, ${pickupLng}`);
-
-  // 2. Find nearest available ambulances
-  console.log(`[AI Engine] PHASE 1: Finding nearest ambulances...`);
+  console.log(`[AI Engine] PHASE 1: Searching for nearest available ambulances around ${pickupLat}, ${pickupLng}`);
   const candidates = await findNearestAvailableAmbulance(pickupLat, pickupLng);
 
   if (candidates.length === 0) {
-    console.error(`[AI Engine] NO AMBULANCES AVAILABLE. Escalating immediately.`);
+    console.error(`[AI Engine] NO AMBULANCES DETECTED. Marking request as failed.`);
     await supabase
       .from("emergency_requests")
       .update({ status: "no_ambulance" })
@@ -153,42 +153,42 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
     return;
   }
 
-  console.log(`[AI Engine] Found ${candidates.length} candidates within range.`);
-  candidates.slice(0, 3).forEach((c, i) => {
-    console.log(`  ${i + 1}. ${c.vehicleNumber} — ${c.distance}km — Score: ${c.score}`);
-  });
+  console.log(`[AI Engine] Found ${candidates.length} candidates. Top candidate: ${candidates[0].vehicleNumber}`);
 
-  // 3. Select optimal hospital
-  console.log(`[AI Engine] PHASE 2: Selecting optimal hospital...`);
+  // 2. Select optimal hospital
+  console.log(`[AI Engine] PHASE 2: Finding best hospital for ${emergencyType}...`);
   const hospitals = await selectBestHospital(pickupLat, pickupLng, emergencyType);
-
   const selectedHospital = hospitals[0];
+  
   if (selectedHospital) {
-    console.log(`[AI Engine] Best Hospital: ${selectedHospital.name} (${selectedHospital.distance}km, ETA: ${Math.round(selectedHospital.estimatedArrival / 60)}m)`);
+    console.log(`[AI Engine] Selected Hospital: ${selectedHospital.name} (${selectedHospital.distance}km)`);
   }
 
-  // Record hospital alternatives for analytics
+  // Record alternatives (analytics)
   await recordHospitalAlternatives(
     requestId,
     hospitals.slice(0, 5).map((h, i) => ({ id: h.id, name: h.name, distance: h.distance, score: h.score, selected: i === 0 }))
-  );
+  ).catch(e => console.error("[AI Engine] recordHospitalAlternatives failed:", e.message));
 
-  // 4. Dispatch with fallback chain
-  console.log(`[AI Engine] PHASE 3: Dispatching ambulance...`);
+  // 3. Dispatch with fallback chain - This is where the wait/poll happens
+  console.log(`[AI Engine] PHASE 3: Initiating dispatch sequence with fallback (candidates: ${candidates.length})`);
   const dispatchResult = await dispatchWithFallback(requestId, candidates);
 
   if (!dispatchResult.success) {
-    console.error(`[AI Engine] Dispatch FAILED. Escalated to supervisor.`);
+    console.error(`[AI Engine] DISPATCH FAILED. Escalating.`);
     return;
   }
 
   const driverCandidate = candidates.find((c) => c.id === dispatchResult.assignedDriverId);
-  if (!driverCandidate) return;
+  if (!driverCandidate) {
+    console.error(`[AI Engine] Driver not found in candidate list after acceptance: ${dispatchResult.assignedDriverId}`);
+    return;
+  }
 
-  console.log(`[AI Engine] DISPATCH SUCCESS: ${driverCandidate.vehicleNumber}`);
+  console.log(`[AI Engine] DISPATCH CONFIRMED: ${driverCandidate.vehicleNumber}`);
 
-  // 5. Calculate full mission route
-  console.log(`[AI Engine] PHASE 4: Calculating mission route...`);
+  // 4. Calculate full mission route
+  console.log(`[AI Engine] PHASE 4: Calculating route to hospital via pickup location...`);
   const hospitalLat = selectedHospital?.id ? (await getHospitalCoords(selectedHospital.id)).lat : pickupLat;
   const hospitalLng = selectedHospital?.id ? (await getHospitalCoords(selectedHospital.id)).lng : pickupLng;
   const missionRoute = await calculateFullMissionRoute(
@@ -197,10 +197,10 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
     hospitalLat, hospitalLng
   );
 
-  console.log(`[AI Engine] Total Mission Duration: ${Math.round(missionRoute.totalDuration / 60)} minutes`);
+  console.log(`[AI Engine] Route calculation complete. ETA: ${Math.round(missionRoute.totalDuration / 60)} minutes total.`);
 
-  // 6. Identify affected junctions & predict traffic
-  console.log(`[AI Engine] PHASE 5: Traffic analysis & stakeholder coordination...`);
+  // 5. Identify affected junctions & predict traffic
+  console.log(`[AI Engine] PHASE 5: Analyzing traffic junctions along the route...`);
   const routePoints = [
     { lat: driverCandidate.lat, lng: driverCandidate.lng },
     { lat: pickupLat, lng: pickupLng },
@@ -208,15 +208,12 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
   ];
 
   const junctionIds = await getAffectedJunctions(routePoints);
-  console.log(`[AI Engine] ${junctionIds.length} junctions on route.`);
+  console.log(`[AI Engine] Detected ${junctionIds.length} junctions for green corridor activation.`);
 
-  if (junctionIds.length > 0) {
-    const traffic = await predictRouteTraffic(junctionIds);
-    const heavyCount = traffic.filter((t) => t.predicted === "heavy" || t.predicted === "gridlock").length;
-    console.log(`[AI Engine] Traffic Alert: ${heavyCount} congested junctions detected.`);
-  }
-
-  // 7. Fetch the actual assignment ID created by dispatchWithFallback
+  // 6. Stakeholder Coordination
+  console.log(`[AI Engine] PHASE 6: Notifying all stakeholders (Hospital, Traffic, Citizen)...`);
+  
+  // Need to fetch assignment ID to track coordination
   const { data: assignment } = await supabase
     .from("ambulance_assignments")
     .select("id")
@@ -227,14 +224,6 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
 
   const assignmentId = assignment?.id ?? dispatchResult.assignedDriverId;
 
-  // Record first assignment and ambulance candidates for analytics
-  await recordFirstAssignment(
-    requestId,
-    assignmentId,
-    candidates.slice(0, 5).map((c, i) => ({ id: c.id, distance: c.distance, score: c.score, selected: c.id === dispatchResult.assignedDriverId }))
-  );
-
-  // 8. Notify all stakeholders
   const ctx: AssignmentContext = {
     assignmentId,
     requestId,
@@ -248,12 +237,10 @@ async function processEmergencyPipeline(requestId: string): Promise<void> {
 
   const { notified, errors, junctionIds: alertedJunctions } = await notifyAllStakeholders(ctx, junctionIds);
 
-  console.log(`[AI Engine] Stakeholders Notified: ${notified} | Errors: ${errors} | Junctions: ${alertedJunctions.length}`);
-  console.log(`\n${"=".repeat(60)}`);
-  console.log(`[AI Engine] Emergency ${requestId} FULLY PROCESSED`);
+  console.log(`[AI Engine] Coordination Success: ${notified} stakeholders reached (Junctions alerted: ${alertedJunctions.length})`);
   console.log(`${"=".repeat(60)}\n`);
 
-  // 9. Schedule continuous monitoring
+  // 7. Monitoring
   triggerAssignmentMonitoring(assignmentId);
 }
 
@@ -269,12 +256,11 @@ async function monitorActiveAssignment(assignmentId: string): Promise<void> {
 
   if (!data) return;
 
-  // If still active, re-schedule monitoring
   if (["accepted", "picked_up"].includes(data.status)) {
-    console.log(`[AI Engine] Assignment ${assignmentId} still active (${data.status}). Re-checking in 30s.`);
+    console.log(`[AI Engine] Monitoring Assignment ${assignmentId}: Current Status ${data.status}. Re-checking in 30s.`);
     enqueueJob("MONITOR_ASSIGNMENT", { assignmentId }, { delayMs: 30_000 });
   } else {
-    console.log(`[AI Engine] Assignment ${assignmentId} completed with status: ${data.status}`);
+    console.log(`[AI Engine] Monitoring Assignment ${assignmentId}: MISSION ENDED (${data.status}).`);
   }
 }
 
